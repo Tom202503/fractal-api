@@ -38,7 +38,11 @@ def load_env():
         if not line or line.startswith("#") or "=" not in line:
             continue
         k, _, v = line.partition("=")
-        os.environ.setdefault(k.strip(), v.strip())
+        v = v.strip()
+        # підтримка значень у лапках: KEY="value" або KEY='value'
+        if len(v) >= 2 and v[0] == v[-1] and v[0] in ('"', "'"):
+            v = v[1:-1]
+        os.environ.setdefault(k.strip(), v)
 
 load_env()
 
@@ -101,7 +105,7 @@ class MarkovLLMAgent:
         xi = random.gauss(0, 1) * 0.1
         F  = -0.2 * (self.mean - 0.5)
         self.mean     = min(1.0, max(0.0, self.mean + F * 0.1 + xi * 0.1))
-        self.variance = max(0.01, self.variance * (0.95 if success else 1.1))
+        self.variance = min(1.0, max(0.01, self.variance * (0.95 if success else 1.1)))
         # скидаємо лічильник помилок при успіху; вимикаємо після 3 поспіль
         if success:
             self.error_count = 0
@@ -520,6 +524,7 @@ def print_help():
         ("/model auto",      "повернути автоматичний вибір"),
         ("/history",         "показати історію розмови"),
         ("/clear",           "очистити історію"),
+        ("/recheck",         "перевірити вимкнених агентів"),
         ("/keys",            "як додати API ключі"),
         ("/help",            "ця підказка"),
         ("/exit або /q",     "вийти"),
@@ -568,7 +573,6 @@ async def chat_loop(agents: List[MarkovLLMAgent], router: BayesianRouter,
     forced_model: Optional[str] = force_model
 
     async def ask(prompt: str) -> None:
-        nonlocal forced_model
         history.append({"role": "user", "content": prompt})
         agent = router.route(prompt, forced_model)
         if not agent:
@@ -614,6 +618,10 @@ async def chat_loop(agents: List[MarkovLLMAgent], router: BayesianRouter,
                     print(c("red", f"  ✗ Fallback теж не спрацював: {e2}"))
                     # повертаємо user message в історію щоб контекст не зламався
                     history.append({"role": "user", "content": prompt})
+            else:
+                print(c("red", "  ✗ Немає доступних fallback-агентів"))
+                # повертаємо user message в історію щоб контекст не зламався
+                history.append({"role": "user", "content": prompt})
 
     # single --ask mode
     if single_ask:
@@ -647,6 +655,11 @@ async def chat_loop(agents: List[MarkovLLMAgent], router: BayesianRouter,
                 print_status(agents, router)
             elif cmd == "/keys":
                 print_keys_help()
+            elif cmd == "/recheck":
+                print(c("gray", "  Перевірка агентів..."))
+                rechecks = await asyncio.gather(*[a.check() for a in agents], return_exceptions=True)
+                recovered = sum(1 for ok in rechecks if ok is True)
+                print(c("green", f"  ✓ Доступно {recovered}/{len(agents)} агентів"))
             elif cmd == "/clear":
                 history.clear()
                 print(c("green", "  ✓ Історію очищено"))

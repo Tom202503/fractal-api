@@ -325,6 +325,13 @@ class TestFallbackHistoryManagement(unittest.TestCase):
         # After fallback exception, history should get the user message back
         self.assertIn("history.append({\"role\": \"user\", \"content\": prompt})", source)
 
+    def test_no_fallback_preserves_user_message(self):
+        """When primary fails and no fallback agent exists, user message should remain."""
+        import inspect
+        source = inspect.getsource(router.chat_loop)
+        # There should be an else branch after 'if fallback:' that re-adds user message
+        self.assertIn("Немає доступних fallback-агентів", source)
+
 
 class TestMarkovLLMAgentStats(unittest.TestCase):
     def test_stats_keys(self):
@@ -351,6 +358,16 @@ class TestMarkovLLMAgentStats(unittest.TestCase):
         self.assertLessEqual(agent.stability_score, 1.0)
         self.assertGreaterEqual(agent.stability_score, 0.0)
 
+    def test_variance_bounded_above(self):
+        """Variance should never exceed 1.0 even after many failures."""
+        agent = router.MarkovLLMAgent("test", "Test", ["code"])
+        agent.variance = 0.9
+        for _ in range(100):
+            agent.error_count = 0  # keep available for testing
+            agent.endomorphism(False, 5000)
+        self.assertLessEqual(agent.variance, 1.0)
+        self.assertGreaterEqual(agent.variance, 0.01)
+
     def test_mean_bounds(self):
         """Mean should always be in [0, 1]."""
         agent = router.MarkovLLMAgent("test", "Test", ["code"])
@@ -367,6 +384,42 @@ class TestLoadEnv(unittest.TestCase):
         # but let's be explicit
         with patch('pathlib.Path.exists', return_value=False):
             router.load_env()  # should not raise
+
+    def test_load_env_strips_quotes(self):
+        """Values wrapped in quotes should have quotes stripped."""
+        import tempfile
+        env_content = 'TEST_QUOTED_KEY="my-secret-value"\nTEST_SINGLE_QUOTED=\'another-value\'\n'
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.env', delete=False) as f:
+            f.write(env_content)
+            f.flush()
+            tmp_path = f.name
+        try:
+            # Remove from env if already set
+            os.environ.pop("TEST_QUOTED_KEY", None)
+            os.environ.pop("TEST_SINGLE_QUOTED", None)
+            with patch('pathlib.Path.exists', return_value=True), \
+                 patch('pathlib.Path.read_text', return_value=env_content):
+                router.load_env()
+            self.assertEqual(os.environ.get("TEST_QUOTED_KEY"), "my-secret-value")
+            self.assertEqual(os.environ.get("TEST_SINGLE_QUOTED"), "another-value")
+        finally:
+            os.unlink(tmp_path)
+            os.environ.pop("TEST_QUOTED_KEY", None)
+            os.environ.pop("TEST_SINGLE_QUOTED", None)
+
+
+class TestRecheckCommand(unittest.TestCase):
+    """Test /recheck command exists in help and chat_loop."""
+
+    def test_recheck_in_help(self):
+        import inspect
+        source = inspect.getsource(router.print_help)
+        self.assertIn("/recheck", source)
+
+    def test_recheck_in_chat_loop(self):
+        import inspect
+        source = inspect.getsource(router.chat_loop)
+        self.assertIn("/recheck", source)
 
 
 if __name__ == "__main__":
